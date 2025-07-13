@@ -1,0 +1,8 @@
+{
+    "python.defaultInterpreterPath": "./backend/venv/Scripts/python.exe",
+    "code-runner.executorMap": {
+        "python": "$pythonPath -u $fullFileName"
+    },
+    "code-runner.respectShebang": false,
+    "python.terminal.activateEnvironment": true
+}
