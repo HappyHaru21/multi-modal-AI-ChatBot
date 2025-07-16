@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect } from "react";
 import axios from "axios";
 import { ClipLoader } from "react-spinners";
+import { useDropzone } from "react-dropzone";
 import "./App.css"; // Assuming you have a CSS file for styles
+import AudioRecorder from "./components/AudioRecorder";
 function App() {
   const [prompt, setPrompt] = useState("");
   const [image, setImage] = useState(null);
@@ -11,6 +13,26 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
   const [pastChats, setPastChats] = useState([]);
+
+  const handleRemoveImage = () => setImage(null);
+  const handleRemoveAudio = () => setAudio(null);
+  const onDrop = (acceptedFiles) => {
+    let img = null, aud = null;
+    acceptedFiles.forEach(file => {
+      if (file.type.startsWith("image/") && !img) img = file;
+      if (file.type.startsWith("audio/") && !aud) aud = file;
+    });
+    if (img) setImage(img);
+    if (aud) setAudio(aud);
+    if (!img && !aud) setError("Please drop an image or audio file.");
+    else setError("");
+  };
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    accept: { "image/*": [], "audio/*": [] },
+    maxFiles: 2,
+    onDrop,
+  });
 
 
   useEffect(() => {
@@ -110,6 +132,25 @@ function App() {
           required
           style={{ width: "100%", marginBottom: 8 }}
         />
+
+        <div
+          {...getRootProps()}
+          style={{
+            border: "2px dashed #36d7b7",
+            borderRadius: 8,
+            padding: 20,
+            textAlign: "center",
+            marginBottom: 16,
+            background: isDragActive ? "#e0f7fa" : "#fafafa",
+            cursor: "pointer",
+          }}
+        >
+          <input {...getInputProps()} />
+          {isDragActive
+            ? <p>Drop your image or audio file here...</p>
+            : <p>Drag & drop image/audio here, or click to select files</p>
+          }
+        </div>
         <div style={{ marginBottom: 8 }}>
           <label htmlFor="image-input" style={{ display: "block", marginBottom: 4, fontWeight: "bold" }}>
             Image:
@@ -121,15 +162,41 @@ function App() {
             onChange={handleImageChange}
           />
         </div>
+        
         {image && (
-          <div style={{ marginTop: 8 }}>
+          <div style={{ marginTop: 8, position: "relative", display: "inline-block" }}>
             <img
               src={URL.createObjectURL(image)}
               alt="Preview"
               style={{ maxWidth: 200, maxHeight: 200, borderRadius: 8 }}
             />
+            <button
+              type="button"
+              onClick={handleRemoveImage}
+              style={{
+                position: "absolute",
+                top: 4,
+                right: 4,
+                background: "#fff",
+                border: "1px solid #ccc",
+                borderRadius: "50%",
+                width: 24,
+                height: 24,
+                cursor: "pointer",
+                fontWeight: "bold",
+                color: "#d32f2f",
+                lineHeight: "20px",
+                padding: 0,
+                textAlign: "center",
+              }}
+              aria-label="Remove image"
+            >
+              ×
+            </button>
           </div>
         )}
+                
+        <AudioRecorder onAudioReady={setAudio} />
         <div style={{ marginBottom: 8 }}>
           <label htmlFor="audio-input" style={{ display: "block", marginBottom: 4, fontWeight: "bold" }}>
             Audio:
@@ -141,11 +208,40 @@ function App() {
             onChange={handleAudioChange}
           />
         </div>
+        
         {audio && (
-          <div style={{ marginTop: 8 }}>
+          <div style={{ marginTop: 8, position: "relative", display: "inline-block" }}>
             <audio controls src={URL.createObjectURL(audio)} />
+            <button
+              type="button"
+              onClick={handleRemoveAudio}
+              style={{
+                position: "absolute",
+                top: 0,
+                right: -30,
+                background: "#fff",
+                border: "1px solid #ccc",
+                borderRadius: "50%",
+                width: 24,
+                height: 24,
+                cursor: "pointer",
+                fontWeight: "bold",
+                color: "#d32f2f",
+                lineHeight: "20px",
+                padding: 0,
+                textAlign: "center",
+              }}
+              aria-label="Remove audio"
+            >
+              ×
+            </button>
           </div>
         )}
+
+
+
+
+
         <button type="submit" disabled={loading}>
           {loading ? "Processing..." : "Send"}
         </button>

@@ -14,6 +14,16 @@ import base64
     prompt: str """
 GROQ_API_KEY = "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"
 app = FastAPI()
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # React dev server
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Load Whisper model and processor (do this once at startup)
 whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large").to("cuda")
 whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large")
@@ -35,34 +45,118 @@ async def upload_image(file: UploadFile = File(...)):
 @app.post("/upload-audio/")
 async def upload_audio(file: UploadFile = File(...)):
     import tempfile, os
-    file_extension = os.path.splitext(file.filename)[1] if file.filename else '.wav'
+    
+    # Get the original filename and extension
+    original_filename = file.filename or "audio"
+    file_extension = os.path.splitext(original_filename)[1].lower()
+    
+    print(f"Processing audio file: {original_filename}, detected extension: {file_extension}")
+    
+    # If no extension or unknown extension, default to .webm (common for web recordings)
+    if not file_extension or file_extension not in ['.wav', '.mp3', '.flac', '.m4a', '.ogg', '.webm']:
+        file_extension = '.webm'
+        print(f"Defaulting to WebM format")
+    
+    # Create temp file with detected extension
     with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
         content = await file.read()
         temp_file.write(content)
+        temp_file.flush()  # Ensure content is written to disk
         temp_file_path = temp_file.name
+        
+    print(f"Created temp file: {temp_file_path}, size: {len(content)} bytes")
+    
     try:
-        # Load audio (supports MP3, WAV, etc.)
+        # Load audio with torchaudio (supports many formats including WebM)
+        print(f"Attempting to load with torchaudio...")
         waveform, sample_rate = torchaudio.load(temp_file_path)
+        print(f"Successfully loaded with torchaudio: shape={waveform.shape}, sample_rate={sample_rate}")
+        
         # Convert to mono if stereo
         if waveform.shape[0] > 1:
             waveform = waveform.mean(dim=0, keepdim=True)
-        # Resample if needed
+            print(f"Converted to mono: shape={waveform.shape}")
+        
+        # Resample to 16kHz (Whisper's expected sample rate)
         if sample_rate != 16000:
             resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)
             waveform = resampler(waveform)
             sample_rate = 16000
+            print(f"Resampled to 16kHz: shape={waveform.shape}")
+        
         # Convert to numpy for Whisper
         audio_input = waveform.squeeze().numpy()
+        print(f"Converted to numpy: shape={audio_input.shape}")
+        
+        # Process with Whisper
         inputs = whisper_processor(audio_input, sampling_rate=sample_rate, return_tensors="pt").to("cuda")
         with torch.no_grad():
             generated_ids = whisper_model.generate(inputs["input_features"])
             transcription = whisper_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        return {"transcription": transcription}
+        
+        print(f"Transcription successful: {transcription[:50]}...")
+        return {"transcription": transcription.strip()}
+        
     except Exception as e:
-        return {"error": str(e)}
+        print(f"torchaudio failed: {str(e)}")
+        # If torchaudio fails, try with soundfile as fallback
+        try:
+            print(f"Attempting to load with soundfile...")
+            audio_input, sample_rate = sf.read(temp_file_path)
+            print(f"Successfully loaded with soundfile: shape={audio_input.shape}, sample_rate={sample_rate}")
+            
+            # Convert to float32 if needed
+            if audio_input.dtype != 'float32':
+                audio_input = audio_input.astype('float32')
+            
+            # Convert to mono if stereo
+            if len(audio_input.shape) > 1:
+                audio_input = audio_input.mean(axis=1)
+                print(f"Converted to mono: shape={audio_input.shape}")
+            
+            # Process with Whisper
+            inputs = whisper_processor(audio_input, sampling_rate=sample_rate, return_tensors="pt").to("cuda")
+            with torch.no_grad():
+                generated_ids = whisper_model.generate(inputs["input_features"])
+                transcription = whisper_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+            
+            print(f"Transcription successful with soundfile: {transcription[:50]}...")
+            return {"transcription": transcription.strip()}
+            
+        except Exception as e2:
+            print(f"soundfile failed: {str(e2)}")
+            # If soundfile fails, try with librosa as final fallback
+            try:
+                import librosa
+                
+                print(f"Attempting to load with librosa...")
+                audio_input, sample_rate = librosa.load(temp_file_path, sr=None)
+                print(f"Successfully loaded with librosa: shape={audio_input.shape}, sample_rate={sample_rate}")
+                
+                # Convert to float32 if needed
+                if audio_input.dtype != 'float32':
+                    audio_input = audio_input.astype('float32')
+                
+                # Process with Whisper
+                inputs = whisper_processor(audio_input, sampling_rate=sample_rate, return_tensors="pt").to("cuda")
+                with torch.no_grad():
+                    generated_ids = whisper_model.generate(inputs["input_features"])
+                    transcription = whisper_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+                
+                print(f"Transcription successful with librosa: {transcription[:50]}...")
+                return {"transcription": transcription.strip()}
+                
+            except Exception as e3:
+                print(f"librosa failed: {str(e3)}")
+                return {"error": f"Could not process audio file. Tried torchaudio: {str(e)}, soundfile: {str(e2)}, librosa: {str(e3)}. File extension: {file_extension}. Please try uploading a different audio format (WAV, MP3, FLAC recommended)."}
+    
     finally:
+        # Clean up temp file
         if os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
             
             
             
@@ -118,14 +212,22 @@ async def multimodal_chat(
             image_status = "No image uploaded."
 
     # --- Audio Processing ---
-    transcription = None
+    transcription = "No audio provided."
     if audio is not None:
         audio_bytes = await audio.read()
         if audio_bytes:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+            # Get file extension, default to .webm for web recordings
+            original_filename = audio.filename or "audio"
+            file_extension = os.path.splitext(original_filename)[1].lower()
+            if not file_extension or file_extension not in ['.wav', '.mp3', '.flac', '.m4a', '.ogg', '.webm']:
+                file_extension = '.webm'
+                
+            with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
                 temp_file.write(audio_bytes)
+                temp_file.flush()
                 temp_file_path = temp_file.name
             try:
+                # Try torchaudio first (better WebM support)
                 waveform, sample_rate = torchaudio.load(temp_file_path)
                 if waveform.shape[0] > 1:
                     waveform = waveform.mean(dim=0, keepdim=True)
@@ -136,16 +238,14 @@ async def multimodal_chat(
                 inputs = whisper_processor(audio_input, sampling_rate=16000, return_tensors="pt").to("cuda")
                 with torch.no_grad():
                     generated_ids = whisper_model.generate(inputs["input_features"])
-                    transcription = whisper_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+                    transcription = whisper_processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
             except Exception as e:
-                transcription = f"Invalid audio file: {str(e)}"
+                transcription = f"Error processing audio: {str(e)} (format: {file_extension})"
             finally:
                 if os.path.exists(temp_file_path):
                     os.unlink(temp_file_path)
         else:
             transcription = "No audio uploaded."
-    else:
-        transcription = "No audio provided."
 
     # --- Compose Groq Vision Model Payload ---
     content_blocks = []
